@@ -51,11 +51,8 @@ function Layout({ userType, onLogout, children }) {
   const isActive = (path) => location.pathname === path;
 
   return (
-    <div className="d-flex">
-      <div
-        className="sidebar bg-light"
-        style={{ width: "300px", minHeight: "100vh" }}
-      >
+    <div className="app-container">
+      <div className="sidebar bg-light">
         <div className="p-3">
           <div className="d-flex justify-content-between align-items-center border-bottom pb-2">
             <h4 className="mb-0 me-4">
@@ -158,7 +155,7 @@ function Layout({ userType, onLogout, children }) {
           )}
         </div>
       </div>
-      <div className="flex-grow-1 p-4">{children}</div>
+      <div className="main-content">{children}</div>
     </div>
   );
 }
