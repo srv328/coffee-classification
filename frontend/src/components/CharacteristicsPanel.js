@@ -2,170 +2,84 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import Swal from "sweetalert2";
 import { translateCharacteristic } from "../utils/translations";
-import AddCharacteristicForm from "./AddCharacteristicForm";
 
 const CharacteristicsPanel = () => {
-  const [coffeeTypes, setCoffeeTypes] = useState([]);
-  const [selectedCoffeeType, setSelectedCoffeeType] = useState(null);
   const [characteristics, setCharacteristics] = useState({
     numeric: [],
     categorical: [],
   });
-  const [showAddForm, setShowAddForm] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newCharacteristic, setNewCharacteristic] = useState({
+    name: "",
+    type: "numeric",
+    min_value: "",
+    max_value: "",
+    values: [],
+  });
+
+  // Состояния для редактируемых значений
+  const [editingNumeric, setEditingNumeric] = useState({});
+  const [editingCategorical, setEditingCategorical] = useState({});
 
   useEffect(() => {
-    fetchCoffeeTypes();
+    fetchCharacteristics();
   }, []);
 
-  const fetchCoffeeTypes = async () => {
-    try {
-      const response = await axios.get(
-        "http://localhost:5000/api/coffee-types"
-      );
-      setCoffeeTypes(response.data);
-    } catch (error) {
-      Swal.fire("Ошибка", "Не удалось загрузить сорта кофе", "error");
-    }
-  };
-
-  const fetchCoffeeCharacteristics = async (coffeeId) => {
+  const fetchCharacteristics = async () => {
     setIsLoading(true);
     try {
-      console.log(`Загружаем характеристики для сорта с ID=${coffeeId}`);
-      const response = await axios.get(
-        `http://localhost:5000/api/expert/coffee-type/${coffeeId}/characteristics`
-      );
-      console.log("Полученные данные:", response.data);
-      setCharacteristics({
-        numeric: response.data.numeric || [],
-        categorical: response.data.categorical || [],
+      const response = await axios.get("http://localhost:5000/api/expert/characteristics");
+      setCharacteristics(response.data);
+      // Инициализируем состояния редактирования
+      const numericEditing = {};
+      const categoricalEditing = {};
+      response.data.numeric.forEach(char => {
+        numericEditing[char.id] = { min_value: char.min_value, max_value: char.max_value };
       });
+      response.data.categorical.forEach(char => {
+        categoricalEditing[char.id] = { values: [...char.values] };
+      });
+      setEditingNumeric(numericEditing);
+      setEditingCategorical(categoricalEditing);
     } catch (error) {
       console.error("Ошибка при загрузке характеристик:", error);
-      if (error.response) {
-        console.error("Данные ответа:", error.response.data);
-        console.error("Статус:", error.response.status);
-      }
       Swal.fire("Ошибка", "Не удалось загрузить характеристики", "error");
-      setCharacteristics({
-        numeric: [],
-        categorical: [],
-      });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleCoffeeTypeChange = (e) => {
-    const coffeeId = parseInt(e.target.value, 10);
-    if (isNaN(coffeeId)) {
-      setSelectedCoffeeType(null);
-      setCharacteristics({ numeric: [], categorical: [] });
-    } else {
-      setSelectedCoffeeType(coffeeId);
-      fetchCoffeeCharacteristics(coffeeId);
-    }
-    setShowAddForm(false);
-  };
-
-  const handleNumericCharacteristicChange = (charId, field, value) => {
-    const numericValue = parseFloat(value);
-    const isValid = !isNaN(numericValue);
-
-    setCharacteristics((prev) => ({
-      ...prev,
-      numeric: (prev.numeric || []).map((char) =>
-        char.id === charId
-          ? {
-              ...char,
-              [field]: isValid ? numericValue : value,
-              isInvalid: {
-                ...char.isInvalid,
-                [field]: !isValid || value === "",
-              },
-            }
-          : char
-      ),
-    }));
-  };
-
-  const handleCategoricalCharacteristicChange = (charId, selectedValues) => {
-    setCharacteristics((prev) => ({
-      ...prev,
-      categorical: (prev.categorical || []).map((char) =>
-        char.id === charId
-          ? {
-              ...char,
-              selected_value_ids: selectedValues,
-              selected_values: selectedValues.map(
-                (id) => char.values[char.value_ids.indexOf(id)]
-              ),
-            }
-          : char
-      ),
-    }));
-  };
-
-  const handleSaveCharacteristics = async () => {
-    if (!selectedCoffeeType) return;
-
-    const invalidNumeric = (characteristics.numeric || []).find(
-      (char) =>
-        char.min_value === null ||
-        char.min_value === undefined ||
-        char.min_value === "" ||
-        char.max_value === null ||
-        char.max_value === undefined ||
-        char.max_value === "" ||
-        parseFloat(char.min_value) > parseFloat(char.max_value)
-    );
-
-    if (invalidNumeric) {
-      Swal.fire({
-        icon: "warning",
-        title: "Некорректные данные",
-        text: `Для характеристики "${translateCharacteristic(
-          invalidNumeric.name
-        )}" указаны некорректные значения. Минимальное значение должно быть меньше или равно максимальному, и поля не могут быть пустыми.`,
-      });
-      return;
-    }
-
+  const handleAddCharacteristic = async () => {
     try {
-      const response = await axios.post(
-        `http://localhost:5000/api/expert/coffee-type/${selectedCoffeeType}/characteristics`,
-        characteristics
-      );
-
+      const response = await axios.post("http://localhost:5000/api/expert/characteristics", newCharacteristic);
       if (response.data.success) {
         Swal.fire({
           icon: "success",
           title: "Успешно",
-          text: "Характеристики сохранены",
+          text: "Характеристика добавлена",
         });
+        setShowAddForm(false);
+        setNewCharacteristic({
+          name: "",
+          type: "numeric",
+          min_value: "",
+          max_value: "",
+          values: [],
+        });
+        fetchCharacteristics();
       }
     } catch (error) {
-      console.error("Ошибка при сохранении характеристик:", error);
+      console.error("Ошибка при добавлении характеристики:", error);
       Swal.fire({
         icon: "error",
         title: "Ошибка",
-        text:
-          error.response?.data?.error || "Не удалось сохранить характеристики",
+        text: error.response?.data?.error || "Не удалось добавить характеристику",
       });
     }
   };
 
-  const handleCharacteristicAdded = () => {
-    if (selectedCoffeeType) {
-      fetchCoffeeCharacteristics(selectedCoffeeType);
-    }
-    setShowAddForm(false);
-  };
-
   const handleDeleteCharacteristic = async (characteristicId) => {
-    if (!selectedCoffeeType) return;
-
     const result = await Swal.fire({
       title: "Удалить характеристику?",
       text: "Это действие нельзя отменить!",
@@ -179,228 +93,328 @@ const CharacteristicsPanel = () => {
 
     if (result.isConfirmed) {
       try {
-        const response = await axios.delete(
-          `http://localhost:5000/api/expert/coffee-type/${selectedCoffeeType}/characteristic/${characteristicId}`
-        );
-
+        const response = await axios.delete(`http://localhost:5000/api/expert/characteristics/${characteristicId}`);
         if (response.data.success) {
           Swal.fire({
             icon: "success",
             title: "Успешно",
             text: "Характеристика удалена",
           });
-          fetchCoffeeCharacteristics(selectedCoffeeType);
+          fetchCharacteristics();
         }
       } catch (error) {
         console.error("Ошибка при удалении характеристики:", error);
         Swal.fire({
           icon: "error",
           title: "Ошибка",
-          text:
-            error.response?.data?.error || "Не удалось удалить характеристику",
+          text: error.response?.data?.error || "Не удалось удалить характеристику",
         });
       }
     }
   };
 
+  const handleNumericChange = (charId, field, value) => {
+    setEditingNumeric(prev => ({
+      ...prev,
+      [charId]: {
+        ...prev[charId],
+        [field]: value
+      }
+    }));
+  };
+
+  const handleCategoricalChange = (charId, values) => {
+    setEditingCategorical(prev => ({
+      ...prev,
+      [charId]: {
+        values: values.split(",").map(v => v.trim()).filter(v => v)
+      }
+    }));
+  };
+
+  const validateNumericLimits = (minValue, maxValue) => {
+    if (minValue === "" || maxValue === "") {
+      return "Все поля должны быть заполнены";
+    }
+    if (parseFloat(minValue) >= parseFloat(maxValue)) {
+      return "Минимальное значение должно быть меньше максимального";
+    }
+    return null;
+  };
+
+  const validateCategoricalValues = (values) => {
+    if (values.length === 0) {
+      return "Должно быть указано хотя бы одно значение";
+    }
+    if (values.some(v => v === "")) {
+      return "Все значения должны быть заполнены";
+    }
+    return null;
+  };
+
+  const handleSaveNumericLimits = async (charId) => {
+    const { min_value, max_value } = editingNumeric[charId];
+    const error = validateNumericLimits(min_value, max_value);
+    
+    if (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Ошибка валидации",
+        text: error
+      });
+      return;
+    }
+
+    try {
+      const response = await axios.put(`http://localhost:5000/api/expert/characteristics/${charId}/numeric-limits`, {
+        min_value: parseFloat(min_value),
+        max_value: parseFloat(max_value)
+      });
+      if (response.data.success) {
+        Swal.fire({
+          icon: "success",
+          title: "Успешно",
+          text: "Ограничения обновлены"
+        });
+        fetchCharacteristics();
+      }
+    } catch (error) {
+      console.error("Ошибка при обновлении ограничений:", error);
+      Swal.fire({
+        icon: "error",
+        title: "Ошибка",
+        text: error.response?.data?.error || "Не удалось обновить ограничения"
+      });
+    }
+  };
+
+  const handleSaveCategoricalValues = async (charId) => {
+    const { values } = editingCategorical[charId];
+    const error = validateCategoricalValues(values);
+    
+    if (error) {
+      Swal.fire({
+        icon: "error",
+        title: "Ошибка валидации",
+        text: error
+      });
+      return;
+    }
+
+    try {
+      const response = await axios.put(`http://localhost:5000/api/expert/characteristics/${charId}/categorical-values`, {
+        values: values
+      });
+      if (response.data.success) {
+        Swal.fire({
+          icon: "success",
+          title: "Успешно",
+          text: "Значения обновлены"
+        });
+        fetchCharacteristics();
+      }
+    } catch (error) {
+      console.error("Ошибка при обновлении значений:", error);
+      Swal.fire({
+        icon: "error",
+        title: "Ошибка",
+        text: error.response?.data?.error || "Не удалось обновить значения"
+      });
+    }
+  };
+
   return (
     <div className="container mt-4">
-      <h2>Характеристики сортов кофе</h2>
-
-      <div className="row mb-4">
-        <div className="col-md-8">
-          <label htmlFor="coffeeTypeSelect" className="form-label">
-            Выберите сорт кофе
-          </label>
-          <select
-            id="coffeeTypeSelect"
-            className="form-select"
-            value={selectedCoffeeType || ""}
-            onChange={handleCoffeeTypeChange}
-          >
-            <option value="">Выберите сорт</option>
-            {coffeeTypes.map((coffee) => (
-              <option key={coffee.id} value={coffee.id}>
-                {coffee.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="col-md-4 d-flex align-items-end">
-          {selectedCoffeeType && (
-            <button
-              className="btn btn-success"
-              onClick={() => setShowAddForm(!showAddForm)}
-            >
-              {showAddForm ? "Скрыть форму" : "Добавить характеристику"}
-            </button>
-          )}
-        </div>
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <h2>Характеристики кофе</h2>
+        <button
+          className="btn btn-primary"
+          onClick={() => setShowAddForm(!showAddForm)}
+        >
+          {showAddForm ? "Отмена" : "Добавить характеристику"}
+        </button>
       </div>
 
-      {showAddForm &&
-        (selectedCoffeeType ? (
-          <AddCharacteristicForm
-            coffeeId={selectedCoffeeType}
-            onCharacteristicAdded={handleCharacteristicAdded}
-          />
-        ) : (
-          <div className="alert alert-warning">
-            Пожалуйста, выберите сорт кофе перед добавлением характеристики
+      {showAddForm && (
+        <div className="card mb-4">
+          <div className="card-body">
+            <h5 className="card-title">Новая характеристика</h5>
+            <div className="row">
+              <div className="col-md-6 mb-3">
+                <label className="form-label">Название</label>
+                <input
+                  type="text"
+                  className="form-control"
+                  value={newCharacteristic.name}
+                  onChange={(e) =>
+                    setNewCharacteristic({ ...newCharacteristic, name: e.target.value })
+                  }
+                />
+              </div>
+              <div className="col-md-6 mb-3">
+                <label className="form-label">Тип</label>
+                <select
+                  className="form-select"
+                  value={newCharacteristic.type}
+                  onChange={(e) =>
+                    setNewCharacteristic({ ...newCharacteristic, type: e.target.value })
+                  }
+                >
+                  <option value="numeric">Числовая</option>
+                  <option value="categorical">Категориальная</option>
+                </select>
+              </div>
+              {newCharacteristic.type === "numeric" ? (
+                <>
+                  <div className="col-md-6 mb-3">
+                    <label className="form-label">Минимальное значение</label>
+                    <input
+                      type="number"
+                      className="form-control"
+                      value={newCharacteristic.min_value}
+                      onChange={(e) =>
+                        setNewCharacteristic({
+                          ...newCharacteristic,
+                          min_value: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="col-md-6 mb-3">
+                    <label className="form-label">Максимальное значение</label>
+                    <input
+                      type="number"
+                      className="form-control"
+                      value={newCharacteristic.max_value}
+                      onChange={(e) =>
+                        setNewCharacteristic({
+                          ...newCharacteristic,
+                          max_value: e.target.value,
+                        })
+                      }
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="col-12 mb-3">
+                  <label className="form-label">Возможные значения (через запятую)</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={newCharacteristic.values.join(", ")}
+                    onChange={(e) =>
+                      setNewCharacteristic({
+                        ...newCharacteristic,
+                        values: e.target.value.split(",").map((v) => v.trim()),
+                      })
+                    }
+                  />
+                </div>
+              )}
+            </div>
+            <button
+              className="btn btn-success"
+              onClick={handleAddCharacteristic}
+            >
+              Добавить
+            </button>
           </div>
-        ))}
+        </div>
+      )}
 
       {isLoading ? (
-        <div className="text-center mt-4">
+        <div className="text-center">
           <div className="spinner-border text-primary" role="status">
             <span className="visually-hidden">Загрузка...</span>
           </div>
         </div>
       ) : (
-        selectedCoffeeType && (
-          <div>
-            <div className="mb-4">
-              <h4>Числовые характеристики</h4>
-              {(characteristics.numeric || []).map((char) => (
-                <div key={char.id} className="card mb-3">
-                  <div className="card-body">
-                    <div className="d-flex justify-content-between align-items-center">
-                      <h5 className="card-title">
-                        {translateCharacteristic(char.name)}
-                      </h5>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleDeleteCharacteristic(char.id)}
-                      >
-                        Удалить
-                      </button>
+        <>
+          <div className="mb-4">
+            <h4>Числовые характеристики</h4>
+            {characteristics.numeric.map((char) => (
+              <div key={char.id} className="card mb-3">
+                <div className="card-body">
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">{translateCharacteristic(char.name)}</h5>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => handleDeleteCharacteristic(char.id)}
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                  <div className="row">
+                    <div className="col-md-5">
+                      <label className="form-label">Минимальное значение</label>
+                      <input
+                        type="number"
+                        className="form-control"
+                        value={editingNumeric[char.id]?.min_value || ""}
+                        onChange={(e) => handleNumericChange(char.id, "min_value", e.target.value)}
+                      />
                     </div>
-                    <div className="row">
-                      <div className="col-md-6">
-                        <label className="form-label">
-                          Минимальное значение
-                        </label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          className={`form-control ${
-                            char.isInvalid?.min_value ? "is-invalid" : ""
-                          }`}
-                          value={char.min_value !== null ? char.min_value : ""}
-                          onChange={(e) =>
-                            handleNumericCharacteristicChange(
-                              char.id,
-                              "min_value",
-                              e.target.value
-                            )
-                          }
-                          required
-                        />
-                        {char.isInvalid?.min_value && (
-                          <div className="invalid-feedback">
-                            Введите корректное значение
-                          </div>
-                        )}
-                      </div>
-                      <div className="col-md-6">
-                        <label className="form-label">
-                          Максимальное значение
-                        </label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          className={`form-control ${
-                            char.isInvalid?.max_value ? "is-invalid" : ""
-                          }`}
-                          value={char.max_value !== null ? char.max_value : ""}
-                          onChange={(e) =>
-                            handleNumericCharacteristicChange(
-                              char.id,
-                              "max_value",
-                              e.target.value
-                            )
-                          }
-                          required
-                        />
-                        {char.isInvalid?.max_value && (
-                          <div className="invalid-feedback">
-                            Введите корректное значение
-                          </div>
-                        )}
-                      </div>
-                      {char.min_value !== null &&
-                        char.max_value !== null &&
-                        parseFloat(char.min_value) >
-                          parseFloat(char.max_value) && (
-                          <div className="col-12 mt-2">
-                            <div className="alert alert-danger py-1">
-                              Минимальное значение не может быть больше
-                              максимального
-                            </div>
-                          </div>
-                        )}
+                    <div className="col-md-5">
+                      <label className="form-label">Максимальное значение</label>
+                      <input
+                        type="number"
+                        className="form-control"
+                        value={editingNumeric[char.id]?.max_value || ""}
+                        onChange={(e) => handleNumericChange(char.id, "max_value", e.target.value)}
+                      />
+                    </div>
+                    <div className="col-md-2 d-flex align-items-end">
+                      <button
+                        className="btn btn-primary w-100"
+                        onClick={() => handleSaveNumericLimits(char.id)}
+                      >
+                        Сохранить
+                      </button>
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
-
-            <div className="mb-4">
-              <h4>Категориальные характеристики</h4>
-              {(characteristics.categorical || []).map((char) => (
-                <div key={char.id} className="card mb-3">
-                  <div className="card-body">
-                    <div className="d-flex justify-content-between align-items-center">
-                      <h5 className="card-title">
-                        {translateCharacteristic(char.name)}
-                      </h5>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleDeleteCharacteristic(char.id)}
-                      >
-                        Удалить
-                      </button>
-                    </div>
-                    <div className="row">
-                      <div className="col-12">
-                        <label className="form-label">Значения</label>
-                        <select
-                          multiple
-                          className="form-select"
-                          value={char.selected_value_ids || []}
-                          onChange={(e) =>
-                            handleCategoricalCharacteristicChange(
-                              char.id,
-                              Array.from(
-                                e.target.selectedOptions,
-                                (option) => option.value
-                              )
-                            )
-                          }
-                        >
-                          {(char.values || []).map((value, index) => (
-                            <option key={index} value={value}>
-                              {value}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="text-end">
-              <button
-                className="btn btn-primary"
-                onClick={handleSaveCharacteristics}
-              >
-                Сохранить изменения
-              </button>
-            </div>
+              </div>
+            ))}
           </div>
-        )
+
+          <div className="mb-4">
+            <h4>Категориальные характеристики</h4>
+            {characteristics.categorical.map((char) => (
+              <div key={char.id} className="card mb-3">
+                <div className="card-body">
+                  <div className="d-flex justify-content-between align-items-center mb-3">
+                    <h5 className="card-title mb-0">{translateCharacteristic(char.name)}</h5>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => handleDeleteCharacteristic(char.id)}
+                    >
+                      Удалить
+                    </button>
+                  </div>
+                  <div className="row">
+                    <div className="col-10">
+                      <label className="form-label">Возможные значения (через запятую)</label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        value={editingCategorical[char.id]?.values.join(", ") || ""}
+                        onChange={(e) => handleCategoricalChange(char.id, e.target.value)}
+                      />
+                    </div>
+                    <div className="col-2 d-flex align-items-end">
+                      <button
+                        className="btn btn-primary w-100"
+                        onClick={() => handleSaveCategoricalValues(char.id)}
+                      >
+                        Сохранить
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );

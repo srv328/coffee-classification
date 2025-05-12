@@ -12,9 +12,13 @@ from ml_model import CoffeeClassifier
 from decimal import Decimal
 from config import db_config
 from datetime import datetime
+from db import get_db_connection
+from routes.characteristics import characteristics
+from routes.coffee_type_characteristics import coffee_type_characteristics
+import joblib
+from sklearn.preprocessing import StandardScaler
 
 load_dotenv()
-
 
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -25,14 +29,15 @@ class CustomJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 app = Flask(__name__)
-app.json_encoder = CustomJSONEncoder  
-
+app.json_encoder = CustomJSONEncoder
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
+# Регистрируем blueprints
+app.register_blueprint(characteristics)
+app.register_blueprint(coffee_type_characteristics, url_prefix='/api/expert')
 
 classifier = CoffeeClassifier()
-
 
 CHARACTERISTIC_TRANSLATIONS = {
     'acidity': 'Кислотность',
@@ -51,10 +56,6 @@ CHARACTERISTIC_TRANSLATIONS = {
     'aftertaste': 'Послевкусие',
     'flavor': 'Вкус'
 }
-
-def get_db_connection():
-    return mysql.connector.connect(**db_config)
-
 
 def statistical_analysis(input_data):
     conn = get_db_connection()
@@ -114,15 +115,27 @@ def statistical_analysis(input_data):
     return sorted(results, key=lambda x: x['confidence'], reverse=True)
 
 
-@app.route('/api/coffee-types', methods=['GET'])
+@app.route('/api/expert/coffee-types', methods=['GET'])
 def get_coffee_types():
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT id, name FROM coffee_types")
-    result = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return jsonify(result)
+    print("Получен запрос на список сортов кофе")
+    try:
+        print("Подключение к базе данных...")
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        print("Выполнение запроса...")
+        cursor.execute("SELECT id, name FROM coffee_types ORDER BY name")
+        result = cursor.fetchall()
+        print(f"Получено {len(result)} сортов кофе")
+        
+        cursor.close()
+        conn.close()
+        print("Соединение с базой данных закрыто")
+        
+        return jsonify(result)
+    except Exception as e:
+        print(f"Ошибка при получении списка сортов кофе: {str(e)}")
+        return jsonify({'error': f'Внутренняя ошибка сервера: {str(e)}'}), 500
 
 @app.route('/api/characteristics', methods=['GET'])
 def get_characteristics():
@@ -267,11 +280,26 @@ def delete_coffee_type(coffee_id):
 
 @app.route('/api/expert/coffee-type/<int:coffee_id>/characteristics', methods=['GET'])
 def get_coffee_characteristics(coffee_id):
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    
+    print(f"Получен запрос на характеристики для сорта кофе {coffee_id}")
+    conn = None
+    cursor = None
     try:
+        print("Подключение к базе данных...")
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
         
+        # Проверяем существование сорта кофе
+        print("Проверка существования сорта кофе...")
+        cursor.execute("SELECT id FROM coffee_types WHERE id = %s", (coffee_id,))
+        if not cursor.fetchone():
+            print(f"Сорт кофе {coffee_id} не найден")
+            return jsonify({
+                'success': False,
+                'error': 'Сорт кофе не найден'
+            }), 404
+        
+        # Получаем числовые характеристики
+        print("Получение числовых характеристик...")
         cursor.execute("""
             SELECT c.id, c.name, c.type, cn.min_value, cn.max_value
             FROM coffee_numeric_characteristics cn
@@ -279,17 +307,21 @@ def get_coffee_characteristics(coffee_id):
             WHERE cn.coffee_type_id = %s
         """, (coffee_id,))
         numeric_characteristics = cursor.fetchall()
+        print(f"Найдено {len(numeric_characteristics)} числовых характеристик")
         
-        
+        # Получаем категориальные характеристики
+        print("Получение категориальных характеристик...")
         cursor.execute("""
-            SELECT c.id, c.name, c.type, cc.value
+            SELECT c.id, c.name, c.type, cv.value
             FROM coffee_categorical_characteristics cc
             JOIN characteristics c ON c.id = cc.characteristic_id
+            JOIN categorical_values cv ON cv.id = cc.categorical_value_id
             WHERE cc.coffee_type_id = %s
         """, (coffee_id,))
         categorical_characteristics = cursor.fetchall()
+        print(f"Найдено {len(categorical_characteristics)} категориальных характеристик")
         
-        
+        # Группируем категориальные характеристики
         grouped_categorical = {}
         for char in categorical_characteristics:
             if char['id'] not in grouped_categorical:
@@ -302,111 +334,114 @@ def get_coffee_characteristics(coffee_id):
             if char['value']:
                 grouped_categorical[char['id']]['values'].append(char['value'])
         
-        
         result = {
             'numeric': numeric_characteristics,
             'categorical': list(grouped_categorical.values())
         }
         
+        print("Успешно сформирован ответ")
         return jsonify(result)
-    except mysql.connector.Error as err:
+        
+    except Exception as e:
+        print(f"Ошибка при получении характеристик: {str(e)}")
         return jsonify({
             'success': False,
-            'error': str(err)
+            'error': f'Произошла ошибка при получении характеристик: {str(e)}'
         }), 500
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+            print("Соединение с базой данных закрыто")
 
 @app.route('/api/expert/coffee-type/<int:coffee_id>/characteristics', methods=['POST'])
 def update_coffee_characteristics(coffee_id):
-    data = request.json
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
+    print(f"Получен запрос на обновление характеристик для сорта кофе {coffee_id}")
+    conn = None
+    cursor = None
     try:
+        data = request.json
+        print("Получены данные:", data)
         
+        print("Подключение к базе данных...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Проверяем существование сорта кофе
+        print("Проверка существования сорта кофе...")
         cursor.execute("SELECT id FROM coffee_types WHERE id = %s", (coffee_id,))
         if not cursor.fetchone():
+            print(f"Сорт кофе {coffee_id} не найден")
             return jsonify({
                 'success': False, 
                 'error': 'Сорт кофе не найден'
             }), 404
-            
         
-        for char in data.get('numeric', []):
-            if 'id' not in char or 'min_value' not in char or 'max_value' not in char:
-                return jsonify({
-                    'success': False,
-                    'error': 'Некорректные данные характеристик'
-                }), 400
-                
-            if char['min_value'] is None or char['max_value'] is None:
-                return jsonify({
-                    'success': False,
-                    'error': f'Пустые значения для характеристики {char.get("name", "")}'
-                }), 400
-                
-            if float(char['min_value']) > float(char['max_value']):
-                return jsonify({
-                    'success': False,
-                    'error': f'Минимальное значение больше максимального для характеристики {char.get("name", "")}'
-                }), 400
-
+        # Удаляем старые характеристики
+        print("Удаление старых характеристик...")
+        cursor.execute("DELETE FROM coffee_numeric_characteristics WHERE coffee_type_id = %s", (coffee_id,))
+        cursor.execute("DELETE FROM coffee_categorical_characteristics WHERE coffee_type_id = %s", (coffee_id,))
         
+        # Добавляем новые числовые характеристики
+        print("Добавление числовых характеристик...")
         for char in data.get('numeric', []):
             cursor.execute("""
                 INSERT INTO coffee_numeric_characteristics 
                 (coffee_type_id, characteristic_id, min_value, max_value)
                 VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                min_value = VALUES(min_value),
-                max_value = VALUES(max_value)
-            """, (coffee_id, char['id'], char['min_value'], char['max_value']))
-
+            """, (coffee_id, char['id'], char.get('min_value', 0), char.get('max_value', 0)))
         
+        # Добавляем новые категориальные характеристики
+        print("Добавление категориальных характеристик...")
         for char in data.get('categorical', []):
-            
-            if 'id' not in char:
-                return jsonify({
-                    'success': False,
-                    'error': 'Некорректные данные категориальных характеристик'
-                }), 400
-                
-            
-            cursor.execute("""
-                DELETE FROM coffee_categorical_characteristics 
-                WHERE coffee_type_id = %s AND characteristic_id = %s
-            """, (coffee_id, char['id']))
-            
-            
             for value in char.get('values', []):
+                # Получаем ID значения категориальной характеристики
                 cursor.execute("""
-                    INSERT INTO coffee_categorical_characteristics 
-                    (coffee_type_id, characteristic_id, value)
-                    VALUES (%s, %s, %s)
-                """, (coffee_id, char['id'], value))
-
+                    SELECT id FROM categorical_values 
+                    WHERE characteristic_id = %s AND value = %s
+                """, (char['id'], value))
+                result = cursor.fetchone()
+                
+                if result:
+                    value_id = result[0]
+                    cursor.execute("""
+                        INSERT INTO coffee_categorical_characteristics 
+                        (coffee_type_id, characteristic_id, categorical_value_id)
+                        VALUES (%s, %s, %s)
+                    """, (coffee_id, char['id'], value_id))
+                else:
+                    # Если значение не найдено, создаем его
+                    cursor.execute("""
+                        INSERT INTO categorical_values (characteristic_id, value)
+                        VALUES (%s, %s)
+                    """, (char['id'], value))
+                    value_id = cursor.lastrowid
+                    
+                    cursor.execute("""
+                        INSERT INTO coffee_categorical_characteristics 
+                        (coffee_type_id, characteristic_id, categorical_value_id)
+                        VALUES (%s, %s, %s)
+                    """, (coffee_id, char['id'], value_id))
+        
         conn.commit()
+        print("Изменения успешно сохранены")
         return jsonify({'success': True})
-
-    except mysql.connector.Error as err:
-        conn.rollback()
-        print(f"Ошибка SQL при обновлении характеристик: {err}")
-        return jsonify({
-            'success': False,
-            'error': f'Произошла ошибка при обновлении характеристик: {str(err)}'
-        }), 500
+        
     except Exception as e:
-        conn.rollback()
-        print(f"Непредвиденная ошибка при обновлении характеристик: {e}")
+        if conn:
+            conn.rollback()
+        print(f"Ошибка при обновлении характеристик: {str(e)}")
         return jsonify({
             'success': False,
-            'error': f'Непредвиденная ошибка: {str(e)}'
+            'error': f'Произошла ошибка при обновлении характеристик: {str(e)}'
         }), 500
     finally:
-        cursor.close()
-        conn.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+            print("Соединение с базой данных закрыто")
 
 @app.route('/api/expert/characteristics', methods=['POST'])
 def add_characteristic():
@@ -688,29 +723,36 @@ def get_all_characteristic_values():
     cursor = conn.cursor(dictionary=True)
     
     try:
-        
+        # Получаем числовые характеристики с их глобальными ограничениями
         cursor.execute("""
             SELECT DISTINCT c.id, c.name, c.type, 
-                   MIN(cn.min_value) as min_value, 
-                   MAX(cn.max_value) as max_value
+                   ncl.min_value as min_value, 
+                   ncl.max_value as max_value
             FROM characteristics c
-            LEFT JOIN coffee_numeric_characteristics cn ON c.id = cn.characteristic_id
+            LEFT JOIN numeric_characteristic_limits ncl ON c.id = ncl.characteristic_id
             WHERE c.type = 'numeric'
-            GROUP BY c.id, c.name, c.type
+            ORDER BY c.name
         """)
         numeric_characteristics = cursor.fetchall()
         
-        
+        # Получаем категориальные характеристики с их возможными значениями
         cursor.execute("""
             SELECT DISTINCT c.id, c.name, c.type, 
-                   GROUP_CONCAT(DISTINCT cc.value ORDER BY cc.value) AS possible_values
+                   GROUP_CONCAT(DISTINCT cv.value ORDER BY cv.value) AS possible_values
             FROM characteristics c
-            LEFT JOIN coffee_categorical_characteristics cc ON c.id = cc.characteristic_id
+            LEFT JOIN categorical_values cv ON c.id = cv.characteristic_id
             WHERE c.type = 'categorical'
             GROUP BY c.id, c.name, c.type
+            ORDER BY c.name
         """)
         categorical_characteristics = cursor.fetchall()
         
+        # Обрабатываем возможные значения для категориальных характеристик
+        for char in categorical_characteristics:
+            if char['possible_values']:
+                char['possible_values'] = char['possible_values'].split(',')
+            else:
+                char['possible_values'] = []
         
         result = {
             'numeric': numeric_characteristics,
@@ -737,10 +779,8 @@ def analyze_static():
     connection = None
     cursor = None
     try:
-        
         connection = mysql.connector.connect(**db_config)
         cursor = connection.cursor()
-        
         
         cursor.execute("SELECT id, name FROM coffee_types")
         coffee_types_data = cursor.fetchall()
@@ -752,7 +792,6 @@ def analyze_static():
             'all_types_analysis': {}
         }
         
-        
         for coffee_id, coffee_name in coffee_types.items():
             type_analysis = {
                 'name': coffee_name,
@@ -760,7 +799,7 @@ def analyze_static():
                 'reasons': []
             }
             
-            
+            # Проверяем числовые характеристики
             for char_id, value in numeric_chars.items():
                 cursor.execute("""
                     SELECT c.name, cn.min_value, cn.max_value 
@@ -770,14 +809,12 @@ def analyze_static():
                 """, (coffee_id, char_id))
                 range_data = cursor.fetchall()
                 
-                
                 cursor.execute("SELECT name FROM characteristics WHERE id = %s", (char_id,))
                 char_name_result = cursor.fetchone()
                 char_name = char_name_result[0] if char_name_result else f"Характеристика {char_id}"
                 char_name_ru = CHARACTERISTIC_TRANSLATIONS.get(char_name, char_name)
                 
                 if not range_data:
-                    
                     type_analysis['matches'] = False
                     type_analysis['reasons'].append(
                         f"Характеристика '{char_name_ru}' не определена для данного сорта"
@@ -798,16 +835,16 @@ def analyze_static():
                             f"входит в допустимый диапазон [{min_val:.2f}, {max_val:.2f}]"
                         )
             
-            
+            # Проверяем категориальные характеристики
             for char_id, value in categorical_chars.items():
                 cursor.execute("""
-                    SELECT c.name, cc.value 
+                    SELECT c.name, cv.value 
                     FROM coffee_categorical_characteristics cc
                     JOIN characteristics c ON c.id = cc.characteristic_id
+                    JOIN categorical_values cv ON cc.categorical_value_id = cv.id
                     WHERE cc.coffee_type_id = %s AND cc.characteristic_id = %s
                 """, (coffee_id, char_id))
                 cat_data = cursor.fetchall()
-                
                 
                 cursor.execute("SELECT name FROM characteristics WHERE id = %s", (char_id,))
                 char_name_result = cursor.fetchone()
@@ -815,7 +852,6 @@ def analyze_static():
                 char_name_ru = CHARACTERISTIC_TRANSLATIONS.get(char_name, char_name)
                 
                 if not cat_data:
-                    
                     type_analysis['matches'] = False
                     type_analysis['reasons'].append(
                         f"Характеристика '{char_name_ru}' не определена для данного сорта"
@@ -837,7 +873,6 @@ def analyze_static():
                         )
             
             results['all_types_analysis'][coffee_name] = type_analysis
-            
             
             if type_analysis['matches'] and not results['type']:
                 results['type'] = coffee_name
@@ -935,52 +970,56 @@ def get_knowledge_base():
     cursor = conn.cursor(dictionary=True)
     
     try:
-        
+        # Получаем все сорта кофе
         cursor.execute("SELECT id, name FROM coffee_types ORDER BY name")
         coffee_types = cursor.fetchall()
         
         result = []
         
-        
         for coffee in coffee_types:
-            
+            # Получаем числовые характеристики
             cursor.execute("""
-                SELECT c.id, c.name, c.type, cn.min_value, cn.max_value
+                SELECT 
+                    c.id,
+                    c.name,
+                    c.type,
+                    cn.min_value,
+                    cn.max_value
                 FROM coffee_numeric_characteristics cn
                 JOIN characteristics c ON c.id = cn.characteristic_id
                 WHERE cn.coffee_type_id = %s
             """, (coffee['id'],))
             numeric_characteristics = cursor.fetchall()
             
-            
+            # Получаем категориальные характеристики
             cursor.execute("""
-                SELECT c.id, c.name, c.type, cc.value
+                SELECT 
+                    c.id,
+                    c.name,
+                    c.type,
+                    GROUP_CONCAT(cv.value) as value_list
                 FROM coffee_categorical_characteristics cc
                 JOIN characteristics c ON c.id = cc.characteristic_id
+                JOIN categorical_values cv ON cc.categorical_value_id = cv.id
                 WHERE cc.coffee_type_id = %s
+                GROUP BY c.id, c.name, c.type
             """, (coffee['id'],))
             categorical_characteristics = cursor.fetchall()
             
-            
-            grouped_categorical = {}
+            # Обрабатываем категориальные значения
             for char in categorical_characteristics:
-                if char['id'] not in grouped_categorical:
-                    grouped_categorical[char['id']] = {
-                        'id': char['id'],
-                        'name': char['name'],
-                        'type': char['type'],
-                        'values': []
-                    }
-                if char['value']:
-                    grouped_categorical[char['id']]['values'].append(char['value'])
-            
+                if char['value_list']:
+                    char['values'] = char['value_list'].split(',')
+                else:
+                    char['values'] = []
+                del char['value_list']  # Удаляем временное поле
             
             result.append({
                 'id': coffee['id'],
                 'name': coffee['name'],
                 'characteristics': {
                     'numeric': numeric_characteristics,
-                    'categorical': list(grouped_categorical.values())
+                    'categorical': categorical_characteristics
                 }
             })
         
@@ -988,10 +1027,268 @@ def get_knowledge_base():
         
     except Exception as e:
         print(f"Ошибка при получении базы знаний: {e}")
-        return jsonify({'error': 'Internal Server Error'}), 500
+        return jsonify({'error': str(e)}), 500
     finally:
         cursor.close()
         conn.close()
+
+@app.route('/api/expert/coffee-type/<int:coffee_type_id>/values', methods=['GET'])
+def get_coffee_type_values(coffee_type_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Проверяем существование сорта кофе
+        cursor.execute("SELECT id FROM coffee_types WHERE id = %s", (coffee_type_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Сорт кофе не найден"}), 404
+        
+        # Получаем числовые характеристики и их значения
+        cursor.execute("""
+            SELECT 
+                c.id,
+                c.name,
+                c.type,
+                ncl.min_value as global_min,
+                ncl.max_value as global_max,
+                cn.min_value as coffee_min,
+                cn.max_value as coffee_max
+            FROM characteristics c
+            JOIN numeric_characteristic_limits ncl ON c.id = ncl.characteristic_id
+            JOIN coffee_numeric_characteristics cn ON c.id = cn.characteristic_id
+            WHERE cn.coffee_type_id = %s
+        """, (coffee_type_id,))
+        numeric_values = cursor.fetchall()
+        
+        # Получаем категориальные характеристики и их значения
+        cursor.execute("""
+            SELECT 
+                c.id,
+                c.name,
+                c.type,
+                (
+                    SELECT GROUP_CONCAT(cv.value)
+                    FROM coffee_categorical_characteristics cc
+                    JOIN categorical_values cv ON cc.categorical_value_id = cv.id
+                    WHERE cc.coffee_type_id = %s AND cc.characteristic_id = c.id
+                ) as selected_values,
+                (
+                    SELECT GROUP_CONCAT(DISTINCT cv2.value)
+                    FROM categorical_values cv2
+                    WHERE cv2.characteristic_id = c.id
+                ) as available_values
+            FROM characteristics c
+            WHERE c.type = 'categorical'
+            AND EXISTS (
+                SELECT 1 
+                FROM coffee_categorical_characteristics cc 
+                WHERE cc.coffee_type_id = %s AND cc.characteristic_id = c.id
+            )
+        """, (coffee_type_id, coffee_type_id))
+        categorical_values = cursor.fetchall()
+        
+        # Обрабатываем результаты
+        for char in categorical_values:
+            if char['selected_values']:
+                char['selected_values'] = char['selected_values'].split(',')
+            else:
+                char['selected_values'] = []
+                
+            if char['available_values']:
+                char['available_values'] = char['available_values'].split(',')
+            else:
+                char['available_values'] = []
+        
+        return jsonify({
+            "numeric": numeric_values,
+            "categorical": categorical_values
+        })
+        
+    except Exception as e:
+        print(f"Ошибка при получении значений характеристик: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.route('/api/expert/coffee-type/<int:coffee_type_id>/values', methods=['POST'])
+def update_coffee_type_values(coffee_type_id):
+    try:
+        data = request.get_json()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Проверяем существование сорта кофе
+        cursor.execute("SELECT id FROM coffee_types WHERE id = %s", (coffee_type_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "Сорт кофе не найден"}), 404
+        
+        # Обновляем числовые значения
+        if 'numeric' in data:
+            for char in data['numeric']:
+                # Проверяем ограничения
+                cursor.execute("""
+                    SELECT min_value, max_value 
+                    FROM numeric_characteristic_limits 
+                    WHERE characteristic_id = %s
+                """, (char['id'],))
+                limits = cursor.fetchone()
+                
+                if limits:
+                    # Преобразуем значения в Decimal для корректного сравнения
+                    min_value = max(Decimal(str(limits[0])), Decimal(str(char.get('min_value', 0))))
+                    max_value = min(Decimal(str(limits[1])), Decimal(str(char.get('max_value', 0))))
+                else:
+                    min_value = Decimal(str(char.get('min_value', 0)))
+                    max_value = Decimal(str(char.get('max_value', 0)))
+                
+                # Обновляем значения
+                cursor.execute("""
+                    UPDATE coffee_numeric_characteristics 
+                    SET min_value = %s, max_value = %s
+                    WHERE coffee_type_id = %s AND characteristic_id = %s
+                """, (min_value, max_value, coffee_type_id, char['id']))
+        
+        # Обновляем категориальные значения
+        if 'categorical' in data:
+            for char in data['categorical']:
+                # Удаляем старые значения
+                cursor.execute("""
+                    DELETE FROM coffee_categorical_characteristics 
+                    WHERE coffee_type_id = %s AND characteristic_id = %s
+                """, (coffee_type_id, char['id']))
+                
+                # Добавляем новые значения
+                for value in char.get('selected_values', []):
+                    # Получаем ID значения категориальной характеристики
+                    cursor.execute("""
+                        SELECT id FROM categorical_values 
+                        WHERE characteristic_id = %s AND value = %s
+                    """, (char['id'], value))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        value_id = result[0]
+                        # Добавляем новое значение
+                        cursor.execute("""
+                            INSERT INTO coffee_categorical_characteristics 
+                            (coffee_type_id, characteristic_id, categorical_value_id)
+                            VALUES (%s, %s, %s)
+                        """, (coffee_type_id, char['id'], value_id))
+        
+        conn.commit()
+        return jsonify({"success": True})
+        
+    except Exception as e:
+        print(f"Ошибка при обновлении значений характеристик: {str(e)}")
+        if 'conn' in locals():
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
+
+@app.route('/api/expert/completeness-check', methods=['GET'])
+def check_completeness():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Получаем все сорта кофе
+        cursor.execute("SELECT id, name FROM coffee_types")
+        coffee_types = cursor.fetchall()
+        
+        result = {
+            'no_characteristics': [],  # Сорта без выбранных характеристик
+            'incomplete_values': []    # Сорта с неполными значениями
+        }
+        
+        for coffee in coffee_types:
+            # Проверяем наличие характеристик
+            cursor.execute("""
+                SELECT COUNT(*) as count 
+                FROM coffee_numeric_characteristics 
+                WHERE coffee_type_id = %s
+            """, (coffee['id'],))
+            numeric_count = cursor.fetchone()['count']
+            
+            cursor.execute("""
+                SELECT COUNT(*) as count 
+                FROM coffee_categorical_characteristics 
+                WHERE coffee_type_id = %s
+            """, (coffee['id'],))
+            categorical_count = cursor.fetchone()['count']
+            
+            if numeric_count == 0 and categorical_count == 0:
+                result['no_characteristics'].append({
+                    'id': coffee['id'],
+                    'name': coffee['name']
+                })
+                continue
+            
+            # Проверяем числовые значения
+            cursor.execute("""
+                SELECT 
+                    c.name,
+                    cn.min_value,
+                    cn.max_value,
+                    ncl.min_value as global_min,
+                    ncl.max_value as global_max
+                FROM coffee_numeric_characteristics cn
+                JOIN characteristics c ON c.id = cn.characteristic_id
+                JOIN numeric_characteristic_limits ncl ON c.id = ncl.characteristic_id
+                WHERE cn.coffee_type_id = %s
+                AND (
+                    cn.min_value IS NULL 
+                    OR cn.max_value IS NULL
+                    OR cn.min_value < ncl.min_value
+                    OR cn.max_value > ncl.max_value
+                    OR cn.min_value = 0 AND cn.max_value = 0
+                )
+            """, (coffee['id'],))
+            invalid_numeric = cursor.fetchall()
+            
+            # Проверяем категориальные значения
+            cursor.execute("""
+                SELECT c.name
+                FROM coffee_categorical_characteristics cc
+                JOIN characteristics c ON c.id = cc.characteristic_id
+                WHERE cc.coffee_type_id = %s
+                AND NOT EXISTS (
+                    SELECT 1 FROM coffee_categorical_characteristics cc2
+                    WHERE cc2.coffee_type_id = cc.coffee_type_id
+                    AND cc2.characteristic_id = cc.characteristic_id
+                    AND cc2.categorical_value_id IS NOT NULL
+                )
+            """, (coffee['id'],))
+            empty_categorical = cursor.fetchall()
+            
+            if invalid_numeric or empty_categorical:
+                result['incomplete_values'].append({
+                    'id': coffee['id'],
+                    'name': coffee['name'],
+                    'empty_numeric': [
+                        f"{char['name']} (текущие значения: {char['min_value']} - {char['max_value']}, "
+                        f"допустимый диапазон: {char['global_min']} - {char['global_max']})"
+                        for char in invalid_numeric
+                    ],
+                    'empty_categorical': [char['name'] for char in empty_categorical]
+                })
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Ошибка при проверке полноты данных: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if 'cursor' in locals():
+            cursor.close()
+        if 'conn' in locals():
+            conn.close()
 
 if __name__ == '__main__':
     app.run(debug=True) 

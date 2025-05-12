@@ -13,12 +13,12 @@ import "./App.css";
 // Компоненты
 import ExpertPanel from "./components/ExpertPanel";
 import CharacteristicsPanel from "./components/CharacteristicsPanel";
-import CoffeeTypeDetails from "./components/CoffeeTypeDetails";
-import CharacteristicValuesPanel from "./components/CharacteristicValuesPanel";
 import SpecialistPanel from "./components/SpecialistPanel";
 import CompletenessPanel from "./components/CompletenessPanel";
 import KnowledgeBasePanel from "./components/KnowledgeBasePanel";
 import SpecialistKnowledgeBase from "./components/SpecialistKnowledgeBase";
+import CoffeeTypeCharacteristics from "./components/CoffeeTypeCharacteristics";
+import CoffeeTypeValues from "./components/CoffeeTypeValues";
 
 function UserSelect({ onSelect }) {
   return (
@@ -102,7 +102,17 @@ function Layout({ userType, onLogout, children }) {
                 }`}
                 to="/expert/possible-values"
               >
-                Возможные значения
+                Характеристики сортов
+              </Link>
+              <Link
+                className={`nav-link mb-2 ${
+                  isActive("/expert/type-values")
+                    ? "active bg-secondary text-white"
+                    : "text-dark"
+                }`}
+                to="/expert/type-values"
+              >
+                Значения свойств
               </Link>
               <Link
                 className={`nav-link mb-2 ${
@@ -205,24 +215,16 @@ function App() {
                   />
                   <Route
                     path="possible-values"
-                    element={<CharacteristicValuesPanel />}
+                    element={<CoffeeTypeCharacteristics />}
                   />
                   <Route
                     path="type-values"
-                    element={<div>Управление значениями для сортов</div>}
+                    element={<CoffeeTypeValues />}
                   />
                   <Route path="completeness" element={<CompletenessPanel />} />
                   <Route
                     path="knowledge-base"
                     element={<KnowledgeBasePanel />}
-                  />
-                  <Route
-                    path="initial-data"
-                    element={<div>Ввод исходных данных</div>}
-                  />
-                  <Route
-                    path="coffee-type/:id"
-                    element={<CoffeeTypeDetails />}
                   />
                   <Route path="*" element={<Navigate to="/expert" replace />} />
                 </Routes>

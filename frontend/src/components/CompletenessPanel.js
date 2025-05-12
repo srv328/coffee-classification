@@ -2,12 +2,15 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { Container, Card, Alert, ListGroup } from "react-bootstrap";
 import Swal from "sweetalert2";
+import { translateCharacteristic } from "../utils/translations";
 
 const CompletenessPanel = () => {
-  const [coffeeTypes, setCoffeeTypes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [incompleteTypes, setIncompleteTypes] = useState([]);
+  const [completenessData, setCompletenessData] = useState({
+    no_characteristics: [],
+    incomplete_values: []
+  });
 
   useEffect(() => {
     checkCompleteness();
@@ -17,44 +20,39 @@ const CompletenessPanel = () => {
     setLoading(true);
     try {
       const response = await axios.get(
-        "http://localhost:5000/api/coffee-types"
+        "http://localhost:5000/api/expert/completeness-check"
       );
-      const types = response.data;
-      setCoffeeTypes(types);
-
-      const incomplete = [];
-      for (const type of types) {
-        try {
-          const charResponse = await axios.get(
-            `http://localhost:5000/api/expert/coffee-type/${type.id}/characteristics`
-          );
-          const characteristics = charResponse.data;
-
-          if (
-            (!characteristics.numeric ||
-              characteristics.numeric.length === 0) &&
-            (!characteristics.categorical ||
-              characteristics.categorical.length === 0)
-          ) {
-            incomplete.push(type);
-          }
-        } catch (err) {
-          console.error(
-            `Ошибка при проверке характеристик для сорта ${type.name}:`,
-            err
-          );
-        }
-      }
-
-      setIncompleteTypes(incomplete);
+      setCompletenessData(response.data);
       setLoading(false);
 
-      if (incomplete.length > 0) {
+      // Показываем предупреждение, если есть проблемы
+      if (response.data.no_characteristics.length > 0 || response.data.incomplete_values.length > 0) {
+        let message = '';
+        
+        if (response.data.no_characteristics.length > 0) {
+          message += `Сорта без характеристик: ${response.data.no_characteristics.map(c => c.name).join(', ')}\n\n`;
+        }
+        
+        if (response.data.incomplete_values.length > 0) {
+          message += 'Сорта с неполными значениями:\n';
+          response.data.incomplete_values.forEach(coffee => {
+            message += `\n${coffee.name}:\n`;
+            if (coffee.empty_numeric.length > 0) {
+              message += `- Числовые характеристики с недопустимыми значениями:\n`;
+              coffee.empty_numeric.forEach(char => {
+                message += `  * ${char}\n`;
+              });
+            }
+            if (coffee.empty_categorical.length > 0) {
+              message += `- Категориальные характеристики без значений: ${coffee.empty_categorical.map(translateCharacteristic).join(', ')}\n`;
+            }
+          });
+        }
+
         Swal.fire({
           icon: "warning",
           title: "Внимание!",
-          html: `Найдено ${incomplete.length} сортов кофе без характеристик. 
-                           Пожалуйста, добавьте характеристики для этих сортов.`,
+          html: message.replace(/\n/g, '<br>'),
           confirmButtonText: "Понятно",
         });
       }
@@ -85,41 +83,72 @@ const CompletenessPanel = () => {
     );
   }
 
+  const totalIssues = completenessData.no_characteristics.length + completenessData.incomplete_values.length;
+
   return (
     <Container className="mt-4">
       <h2 className="mb-4">Проверка полноты данных</h2>
 
-      {incompleteTypes.length > 0 ? (
-        <Alert variant="warning" className="mb-4">
-          <h4 className="alert-heading">Внимание!</h4>
-          <p>
-            Найдены сорта кофе без характеристик. Пожалуйста, добавьте
-            характеристики для этих сортов:
-          </p>
-          <ListGroup>
-            {incompleteTypes.map((type) => (
-              <ListGroup.Item key={type.id} variant="warning">
-                {type.name}
-              </ListGroup.Item>
-            ))}
-          </ListGroup>
-        </Alert>
+      {totalIssues > 0 ? (
+        <>
+          {completenessData.no_characteristics.length > 0 && (
+            <Alert variant="warning" className="mb-4">
+              <h4 className="alert-heading">Сорта без характеристик</h4>
+              <p>Следующие сорта кофе не имеют выбранных характеристик:</p>
+              <ListGroup>
+                {completenessData.no_characteristics.map((type) => (
+                  <ListGroup.Item key={type.id} variant="warning">
+                    {type.name}
+                  </ListGroup.Item>
+                ))}
+              </ListGroup>
+            </Alert>
+          )}
+
+          {completenessData.incomplete_values.length > 0 && (
+            <Alert variant="warning" className="mb-4">
+              <h4 className="alert-heading">Сорта с неполными значениями</h4>
+              {completenessData.incomplete_values.map((coffee) => (
+                <div key={coffee.id} className="mb-3">
+                  <h5>{coffee.name}</h5>
+                  {coffee.empty_numeric.length > 0 && (
+                    <div>
+                      <strong>Числовые характеристики с недопустимыми значениями:</strong>
+                      <ul>
+                        {coffee.empty_numeric.map((char, index) => (
+                          <li key={index}>{translateCharacteristic(char)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {coffee.empty_categorical.length > 0 && (
+                    <div>
+                      <strong>Категориальные характеристики без значений:</strong>
+                      <ul>
+                        {coffee.empty_categorical.map((char, index) => (
+                          <li key={index}>{translateCharacteristic(char)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </Alert>
+          )}
+        </>
       ) : (
         <Alert variant="success">
           <h4 className="alert-heading">Отлично!</h4>
-          <p>Все сорта кофе имеют характеристики. Данные полные.</p>
+          <p>Все сорта кофе имеют полный набор характеристик и значений.</p>
         </Alert>
       )}
 
       <Card className="mt-4">
         <Card.Header>Статистика</Card.Header>
         <Card.Body>
-          <p>Всего сортов кофе: {coffeeTypes.length}</p>
-          <p>Сортов без характеристик: {incompleteTypes.length}</p>
-          <p>
-            Сортов с характеристиками:{" "}
-            {coffeeTypes.length - incompleteTypes.length}
-          </p>
+          <p>Всего проблем: {totalIssues}</p>
+          <p>Сортов без характеристик: {completenessData.no_characteristics.length}</p>
+          <p>Сортов с неполными значениями: {completenessData.incomplete_values.length}</p>
         </Card.Body>
       </Card>
     </Container>

@@ -22,35 +22,9 @@ const KnowledgeBasePanel = () => {
   const fetchCoffeeTypes = async () => {
     try {
       const response = await axios.get(
-        "http://localhost:5000/api/coffee-types"
+        "http://localhost:5000/api/specialist/knowledge-base"
       );
-      const types = response.data;
-
-      const typesWithCharacteristics = await Promise.all(
-        types.map(async (type) => {
-          try {
-            const charResponse = await axios.get(
-              `http://localhost:5000/api/expert/coffee-type/${type.id}/characteristics`
-            );
-            console.log(`Характеристики для ${type.name}:`, charResponse.data);
-            return {
-              ...type,
-              characteristics: charResponse.data,
-            };
-          } catch (err) {
-            console.error(
-              `Ошибка при загрузке характеристик для ${type.name}:`,
-              err
-            );
-            return {
-              ...type,
-              characteristics: { numeric: [], categorical: [] },
-            };
-          }
-        })
-      );
-
-      setCoffeeTypes(typesWithCharacteristics);
+      setCoffeeTypes(response.data);
       setLoading(false);
     } catch (err) {
       setError("Ошибка при загрузке данных");
@@ -92,7 +66,7 @@ const KnowledgeBasePanel = () => {
                 <Card.Body>
                   <h5 className="mb-3">Характеристики:</h5>
 
-                  {type.characteristics.numeric.length > 0 && (
+                  {type.characteristics?.numeric?.length > 0 && (
                     <div className="mb-4">
                       <h6>Числовые характеристики:</h6>
                       <Table striped bordered hover size="sm">
@@ -116,7 +90,7 @@ const KnowledgeBasePanel = () => {
                     </div>
                   )}
 
-                  {type.characteristics.categorical.length > 0 && (
+                  {type.characteristics?.categorical?.length > 0 && (
                     <div>
                       <h6>Категориальные характеристики:</h6>
                       <Table striped bordered hover size="sm">
@@ -131,7 +105,7 @@ const KnowledgeBasePanel = () => {
                             <tr key={char.id}>
                               <td>{translateCharacteristic(char.name)}</td>
                               <td>
-                                {char.values.map((value, index) => (
+                                {char.values?.map((value, index) => (
                                   <span
                                     key={index}
                                     className="badge bg-secondary me-1"
@@ -147,8 +121,8 @@ const KnowledgeBasePanel = () => {
                     </div>
                   )}
 
-                  {type.characteristics.numeric.length === 0 &&
-                    type.characteristics.categorical.length === 0 && (
+                  {(!type.characteristics?.numeric?.length && 
+                    !type.characteristics?.categorical?.length) && (
                       <Alert variant="warning">
                         Для этого сорта кофе пока не заданы характеристики
                       </Alert>

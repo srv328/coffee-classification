@@ -24,10 +24,52 @@ const SpecialistPanel = () => {
   const [staticResults, setStaticResults] = useState(null);
   const [mlResults, setMlResults] = useState(null);
   const [formError, setFormError] = useState(null);
+  const [isKnowledgeBaseComplete, setIsKnowledgeBaseComplete] = useState(true);
+  const [knowledgeBaseError, setKnowledgeBaseError] = useState(null);
 
   useEffect(() => {
     fetchCharacteristics();
+    checkKnowledgeBaseCompleteness();
   }, []);
+
+  const checkKnowledgeBaseCompleteness = async () => {
+    try {
+      const response = await axios.get(
+        "http://localhost:5000/api/expert/completeness-check"
+      );
+      
+      const hasIssues = response.data.no_characteristics.length > 0 || 
+                       response.data.incomplete_values.length > 0;
+      
+      setIsKnowledgeBaseComplete(!hasIssues);
+      
+      if (hasIssues) {
+        let message = 'База знаний неполная:\n';
+        
+        if (response.data.no_characteristics.length > 0) {
+          message += `\nСорта без характеристик: ${response.data.no_characteristics.map(c => c.name).join(', ')}`;
+        }
+        
+        if (response.data.incomplete_values.length > 0) {
+          message += '\n\nСорта с неполными значениями:';
+          response.data.incomplete_values.forEach(coffee => {
+            message += `\n${coffee.name}:`;
+            if (coffee.empty_numeric.length > 0) {
+              message += `\n- Числовые характеристики с недопустимыми значениями: ${coffee.empty_numeric.join(', ')}`;
+            }
+            if (coffee.empty_categorical.length > 0) {
+              message += `\n- Категориальные характеристики без значений: ${coffee.empty_categorical.join(', ')}`;
+            }
+          });
+        }
+        
+        setKnowledgeBaseError(message);
+      }
+    } catch (err) {
+      console.error("Ошибка при проверке полноты базы знаний:", err);
+      setKnowledgeBaseError("Не удалось проверить полноту базы знаний");
+    }
+  };
 
   const fetchCharacteristics = async () => {
     try {
@@ -61,10 +103,32 @@ const SpecialistPanel = () => {
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
+    
+    // Для числовых полей проверяем, что значение находится в допустимом диапазоне
+    if (name.startsWith('numeric_')) {
+      const charId = name.split('_')[1];
+      const characteristic = characteristics.numeric.find(c => c.id === parseInt(charId));
+      
+      if (characteristic) {
+        const numValue = parseFloat(value);
+        if (value !== '' && !isNaN(numValue)) {
+          if (characteristic.min_value !== null && numValue < characteristic.min_value) {
+            setFormError(`Значение должно быть не менее ${characteristic.min_value}`);
+            return;
+          }
+          if (characteristic.max_value !== null && numValue > characteristic.max_value) {
+            setFormError(`Значение должно быть не более ${characteristic.max_value}`);
+            return;
+          }
+        }
+      }
+    }
+    
     setFormData((prev) => ({
       ...prev,
       [name]: value,
     }));
+    setFormError(null);
   };
 
   const validateForm = () => {
@@ -79,6 +143,26 @@ const SpecialistPanel = () => {
     if (!hasNumericValue && !hasCategoricalValue) {
       setFormError("Пожалуйста, заполните хотя бы одну характеристику");
       return false;
+    }
+
+    // Проверяем все числовые значения на соответствие диапазонам
+    for (const [key, value] of Object.entries(formData)) {
+      if (key.startsWith('numeric_') && value !== '') {
+        const charId = key.split('_')[1];
+        const characteristic = characteristics.numeric.find(c => c.id === parseInt(charId));
+        
+        if (characteristic) {
+          const numValue = parseFloat(value);
+          if (characteristic.min_value !== null && numValue < characteristic.min_value) {
+            setFormError(`Значение ${translateCharacteristic(characteristic.name)} должно быть не менее ${characteristic.min_value}`);
+            return false;
+          }
+          if (characteristic.max_value !== null && numValue > characteristic.max_value) {
+            setFormError(`Значение ${translateCharacteristic(characteristic.name)} должно быть не более ${characteristic.max_value}`);
+            return false;
+          }
+        }
+      }
     }
 
     setFormError(null);
@@ -185,6 +269,17 @@ const SpecialistPanel = () => {
     <Container className="mt-4">
       <h2 className="mb-4">Определение сорта кофе</h2>
 
+      {knowledgeBaseError && (
+        <Alert variant="warning" className="mb-4">
+          <Alert.Heading>Внимание!</Alert.Heading>
+          <p style={{ whiteSpace: 'pre-line' }}>{knowledgeBaseError}</p>
+          <hr />
+          <p className="mb-0">
+            Пожалуйста, обратитесь к эксперту для заполнения базы знаний.
+          </p>
+        </Alert>
+      )}
+
       <Form>
         {formError && (
           <Alert variant="danger" className="mb-3">
@@ -202,6 +297,11 @@ const SpecialistPanel = () => {
                     <Form.Group>
                       <Form.Label>
                         {translateCharacteristic(char.name)}
+                        {char.min_value !== null && char.max_value !== null && (
+                          <small className="text-muted ms-2">
+                            (от {char.min_value} до {char.max_value})
+                          </small>
+                        )}
                       </Form.Label>
                       <Form.Control
                         type="number"
@@ -209,6 +309,8 @@ const SpecialistPanel = () => {
                         name={`numeric_${char.id}`}
                         value={formData[`numeric_${char.id}`]}
                         onChange={handleInputChange}
+                        min={char.min_value}
+                        max={char.max_value}
                       />
                     </Form.Group>
                   </Col>
@@ -235,13 +337,13 @@ const SpecialistPanel = () => {
                         onChange={handleInputChange}
                       >
                         <option value="">Выберите значение</option>
-                        {(char.possible_values || "")
-                          .split(",")
-                          .map((value, index) => (
-                            <option key={index} value={value.trim()}>
-                              {value.trim()}
-                            </option>
-                          ))}
+                        {Array.isArray(char.possible_values) 
+                          ? char.possible_values.map((value, index) => (
+                              <option key={index} value={value}>
+                                {value}
+                              </option>
+                            ))
+                          : []}
                       </Form.Select>
                     </Form.Group>
                   </Col>
@@ -258,7 +360,7 @@ const SpecialistPanel = () => {
                 variant="primary"
                 onClick={handleStaticAnalysis}
                 size="lg"
-                disabled={analyzing}
+                disabled={analyzing || !isKnowledgeBaseComplete}
                 className="w-100"
               >
                 {analyzing ? "Анализ..." : "Решатель"}
@@ -269,7 +371,7 @@ const SpecialistPanel = () => {
                 variant="success"
                 onClick={handleMlAnalysis}
                 size="lg"
-                disabled={analyzing}
+                disabled={analyzing || !isKnowledgeBaseComplete}
                 className="w-100"
               >
                 {analyzing ? "Анализ..." : "Анализ с помощью ИИ"}
